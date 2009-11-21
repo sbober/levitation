@@ -18,6 +18,7 @@ import sys
 import time
 import urlparse
 from optparse import OptionParser
+from tokyocabinet import btree
 
 # The encoding for input, output and internal representation. Leave alone.
 ENCODING = 'UTF-8'
@@ -56,7 +57,8 @@ class Meta:
 	def __init__(self, file):
 		self.struct = struct.Struct('=LLLLB')
 		self.maxrev = -1
-		self.fh = open(file, 'wb+')
+		self.db = btree.BTree()
+		self.db.open(file, btree.BDBOWRITER | btree.BDBOCREAT | btree.BDBOTRUNC)
 		self.domain = 'unknown.invalid'
 		self.nstoid = self.idtons = {}
 	def write(self, rev, time, page, author, minor):
@@ -74,44 +76,43 @@ class Meta:
 			author.id,
 			flags
 			)
-		self.fh.seek(rev * self.struct.size)
-		self.fh.write(data)
+		self.db[str(rev)] = data;
 		if self.maxrev < rev:
 			self.maxrev = rev
 	def read(self, rev):
-		self.fh.seek(rev * self.struct.size)
-		data = self.fh.read(self.struct.size)
-		tuple = self.struct.unpack(data)
-		d = {
-			'rev':    tuple[0],
-			'epoch':  tuple[1],
-			'time':   datetime.datetime.utcfromtimestamp(tuple[1]),
-			'page':   tuple[2],
-			'user':   tuple[3],
-			'minor':  False,
-			'isip':   False,
-			'isdel':  False,
-			}
-		if d['rev'] != 0:
-			d['exists'] = True
-		else:
-			d['exists'] = False
-		d['day'] = d['time'].strftime('%Y-%m-%d')
-		flags = tuple[4]
-		if flags & 1:
-			d['minor'] = True
-		if flags & 2:
-			d['isip'] = True
-			d['user'] = socket.inet_ntoa(struct.pack('!I', tuple[3]))
-		if flags & 4:
-			d['isdel'] = True
+		try:
+			data = self.db[str(rev)]
+			tuple = self.struct.unpack(data)
+			d = {
+				'rev':    tuple[0],
+				'epoch':  tuple[1],
+				'time':   datetime.datetime.utcfromtimestamp(tuple[1]),
+				'page':   tuple[2],
+				'user':   tuple[3],
+				'minor':  False,
+				'isip':   False,
+				'isdel':  False,
+				'exists': True,
+				}
+			d['day'] = d['time'].strftime('%Y-%m-%d')
+			flags = tuple[4]
+			if flags & 1:
+				d['minor'] = True
+			if flags & 2:
+				d['isip'] = True
+				d['user'] = socket.inet_ntoa(struct.pack('!I', tuple[3]))
+			if flags & 4:
+				d['isdel'] = True
+		except KeyError:
+			d = { 'exists': False }
 		return d
 
 class StringStore:
 	def __init__(self, file):
 		self.struct = struct.Struct('=Bb255s')
 		self.maxid = -1
-		self.fh = open(file, 'wb+')
+		self.db = btree.BTree()
+		self.db.open(file, btree.BDBOWRITER | btree.BDBOCREAT | btree.BDBOTRUNC)
 	def write(self, id, text, flags = 1):
 		if len(text) > 255:
 			encoded = text.encode('hex')
@@ -120,24 +121,21 @@ class StringStore:
 				progress(encoded)
 			text = text[0:255].decode(ENCODING, 'ignore').encode(ENCODING)
 		data = self.struct.pack(len(text), flags, text)
-		self.fh.seek(id * self.struct.size)
-		self.fh.write(data)
+		self.db[str(id)] = data
 		if self.maxid < id:
 			self.maxid = id
 	def read(self, id):
-		self.fh.seek(id * self.struct.size)
-		packed = self.fh.read(self.struct.size)
-		data = None
-		if len(packed) < self.struct.size:
-			# There is no such entry.
-			d = {'len': 0, 'flags': 0, 'text': ''}
-		else:
+		try:
+			packed = self.db[str(id)]
 			data = self.struct.unpack(packed)
 			d = {
 				'len':   data[0],
 				'flags': data[1],
 				'text':  data[2][0:data[0]]
 				}
+		except KeyError:
+			d = {'len': 0, 'flags': 0, 'text': ''}
+
 		return d
 
 class User:
